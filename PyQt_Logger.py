@@ -1,0 +1,161 @@
+# cSpell:includeRegExp #.*
+# cSpell:includeRegExp /(["]{3}|[']{3})[^\1]*?\1/g
+
+import logging
+from PyQt5.QtWidgets import QTextEdit, QAction
+from PyQt5 import QtGui, QtCore
+from logging.handlers import RotatingFileHandler
+import sys
+
+
+class QTextEditLogger(QTextEdit):
+    # def __init__(self, parent, file_log=True, debug_enable=True):
+    def __init__(self, parent=None, file_log=True,
+                 log_filename='PyQt_VibroGyroTest', logger_name='main'):
+        super(QTextEditLogger, self).__init__(
+            parent, readOnly=True, objectName="logger",
+            contextMenuPolicy=QtCore.Qt.CustomContextMenu)
+        self.logger_name = logger_name
+        self.log_filename = log_filename
+        # logging.disable(logging.INFO) # disable logging for certain level
+
+        logger = logging.getLogger(logger_name)
+        # logger.propagate = False # ?
+        def handle_exception(exc_type, exc_value, exc_traceback):
+            if issubclass(exc_type, KeyboardInterrupt):
+                sys.__excepthook__(exc_type, exc_value, exc_traceback)
+                return
+            logger.error("Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback))
+            # logger.error(f"Uncaught exception {exc_type}, {exc_value}, {exc_traceback}")
+        sys.excepthook = handle_exception
+        # sys.unraisablehook
+        
+        if file_log:
+            file_formatter = logging.Formatter(
+                ('#%(levelname)-s,\t%(pathname)s:%(lineno)d,\t%(asctime)s, %(message)s'))
+            file_handler = RotatingFileHandler(
+                f'logs\{self.log_filename}.log', mode='w', encoding="utf-8", maxBytes=2_000_000, backupCount=10)
+                # 'PyQt_VibroGyroTest.log', mode='w', encoding="utf-8", maxBytes=5120, backupCount=5)
+            file_handler.setLevel(logging.DEBUG)
+            file_handler.setFormatter(file_formatter)
+            logger.addHandler(file_handler)
+            try:
+                logger.handlers[0].doRollover()  # из-за этого проблемы при работе нескольких экземпляров одного приложения
+            except PermissionError:  # [WinError 32]
+                logger.debug("doRollover() PermissionError")
+            # logging.basicConfig(  # не выводит сообщения на русском
+            #     filename='GyroTestPyQt.log',
+            #     filemode='w',
+            #     format=('#%(levelname)-s,\t%(pathname)s:%(lineno)d,\t%(asctime)s, %(message)s'),
+            #     # format=('#%(levelname)-s,\t%(pathname)s,\tline %(lineno)d,\t[%(asctime)s]: %(message)s'),
+            #     level=logging.INFO,
+            # )  #  encoding="utf-8" work since python 3.9
+
+        # console_formatter = logging.Formatter(('#%(levelname)-s, %(pathname)s, '
+        #                                     'line %(lineno)d: %(message)s'))
+        console_handler = logging.StreamHandler(stream=sys.stdout)
+        console_handler.setLevel(logging.ERROR)
+        logger.addHandler(console_handler)
+        # console_handler.setFormatter(console_formatter)
+
+        # log_window_formatter = logging.Formatter(
+            # ('>>> %(asctime)s %(message)s\n'), datefmt='%H:%M:%S')
+        self.log_window_handler = logging.Handler()
+        # self.log_text_edit = QTextEdit(parent, readOnly=True, objectName="logger")
+        # self.widget.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.NoTextInteraction)
+        self.log_window_handler.emit = self.insert_text
+        # log_window_handler.emit = lambda record: self.widget.insertPlainText(
+            # log_window_handler.format(record)
+        # )
+        self.log_window_handler.setLevel(logging.INFO)
+        self.log_window_handler.setFormatter(CustomFormatter())
+        # self.log_window_handler.setFormatter(log_window_formatter)
+        # print(sys.getsizeof(CustomFormatter()))
+        logger.addHandler(self.log_window_handler)
+
+        # self.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self.__logsContextMenu)
+        self.enable_file_debug_action = QAction(
+            "Debug in file", None, checkable=True)
+        self.enable_file_debug_action.setChecked(True)
+        self.enable_file_debug_action.triggered.connect(self.switch_logger_mode)
+        self.switch_logger_mode()
+
+    @QtCore.pyqtSlot()
+    def open_debug_file(self):
+        logging.getLogger(self.logger_name).debug('start log file')
+        # from os import path, startfile
+        from os import startfile
+        try:
+            startfile(f'logs\{self.log_filename}.log')
+        except FileNotFoundError:
+            logging.getLogger('main').warning('Wrong filename!')
+
+    @QtCore.pyqtSlot()
+    def insert_text(self, record):
+        cur = self.textCursor()
+        cur.movePosition(QtGui.QTextCursor.End)
+        self.setTextCursor(cur)
+        self.insertHtml(self.log_window_handler.format(record))
+        # self.widget.insertPlainText(
+            # self.log_window_handler.format(record))
+        scrollbar = self.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+    @QtCore.pyqtSlot()
+    def __logsContextMenu(self):
+        self._normal_menu = self.createStandardContextMenu()
+        self._normal_menu.addSeparator()
+        self._normal_menu.addAction(self.enable_file_debug_action)
+
+        open_debug_file_action = QAction("Open log file", self._normal_menu)
+        open_debug_file_action.triggered.connect(self.open_debug_file)
+        self._normal_menu.addAction(open_debug_file_action)
+        clear_action = QAction("Clear log", self._normal_menu)
+        clear_action.triggered.connect(lambda: self.clear())
+        self._normal_menu.addAction(clear_action)
+
+        self._normal_menu.exec_(QtGui.QCursor.pos())
+        self._normal_menu.deleteLater()
+
+    def switch_logger_mode(self):
+        logger = logging.getLogger('main')
+        if self.enable_file_debug_action.isChecked():
+            logger.setLevel(logging.DEBUG)
+        else:
+            logger.setLevel(logging.INFO)
+
+    def getLogger(self):
+        return logging.getLogger('main')
+# -------------------------------------------------------------------------------------------------
+
+
+class CustomFormatter():
+    __slots__ = ("FORMATS")
+    """Logging colored formatter"""
+    # лучше не делать отдельным классом
+    def __init__(self):
+        self.FORMATS = {
+            logging.DEBUG: '<font color="grey">>>></font> <font color="white">%(asctime)s</font> %(message)s<br />',
+            logging.INFO: '<font color="grey">>>></font> <font color="green">%(asctime)s</font> %(message)s<br />',
+            logging.WARNING: '<font color="grey">>>></font> <font color="orange">%(asctime)s</font> %(message)s<br />',
+            logging.ERROR: '<font color="grey">>>></font> <font color="red">%(asctime)s</font> <font color="orange">%(message)s</font><br />',
+            logging.CRITICAL: '<font color="grey">>>></font> <font color="red">%(asctime)s</font> <font color="orange">%(message)s</font><br />',
+        }
+
+    def format(self, record):
+        log_fmt = self.FORMATS.get(record.levelno)
+        formatter = logging.Formatter(log_fmt, datefmt = '%H:%M:%S')
+        return formatter.format(record)
+
+# -------------------------------------------------------------------------------------------------
+# -------------------------------------------------------------------------------------------------
+# -------------------------------------------------------------------------------------------------
+
+
+if __name__ == "__main__":
+    import PyQt_AppClass
+    from PyQt5 import QtWidgets
+    app = QtWidgets.QApplication(sys.argv)
+    window = PyQt_AppClass.AppWindow()
+    sys.exit(app.exec())
